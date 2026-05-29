@@ -405,4 +405,5 @@ pytest -m live cmd/test/test_bitunix_live.py::test_fetch_price -s
 
 # View detailed logs
 tail -f output/logs/bot.log
-``` 
+``` #   T e l e g r a m - T r a d i n g - B o t - m a i n  
+ 
