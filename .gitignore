@@ -42,7 +42,6 @@ htmlcov/
 .secret
 
 # Telethon / session artifacts
-*.session
 *.session-journal
 
 # Output artifacts
