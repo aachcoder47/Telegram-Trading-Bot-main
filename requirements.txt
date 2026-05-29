@@ -1,0 +1,15 @@
+telethon
+ccxt
+dotenv
+requests
+mistralai
+bitcoinlib
+web3
+pydantic
+sqlalchemy
+argon2-cffi
+pycryptodome
+flask
+pytest
+gunicorn
+eth-account
