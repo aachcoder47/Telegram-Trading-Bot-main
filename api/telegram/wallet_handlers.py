@@ -196,6 +196,10 @@ Let's get started! Type /create_wallet to begin.
     async def on_sync(event):
         """Sync wallet balance from blockchain"""
         try:
+            if not blockchain_service:
+                await event.reply("❌ Blockchain service unavailable. Cannot sync balance.")
+                return
+            
             chat_id = event.chat_id
             sync_result = blockchain_service.sync_wallet_balance(chat_id)
             
@@ -219,6 +223,10 @@ Let's get started! Type /create_wallet to begin.
     async def on_withdraw(event):
         """Withdraw funds to blockchain address"""
         try:
+            if not blockchain_service:
+                await event.reply("❌ Blockchain service unavailable. Cannot process withdrawals.")
+                return
+            
             chat_id = event.chat_id
             # Parse amount and address from message
             message_text = event.message.message
