@@ -25,9 +25,14 @@ async def run_wallet_bot(cfg):
     trading_service = InternalTradingService(db_conn, cfg, wallet_service)
     logging.getLogger(__name__).info("Using SIMULATED trading (internal)")
     
-    # Initialize blockchain wallet service for real deposits/withdrawals
-    blockchain_service = RealBlockchainWalletService(db_conn, cfg, wallet_service)
-    logging.getLogger(__name__).info("Using REAL blockchain wallet (Ethereum/BSC/Polygon)")
+    # Initialize blockchain wallet service for real deposits/withdrawals (optional)
+    blockchain_service = None
+    try:
+        blockchain_service = RealBlockchainWalletService(db_conn, cfg, wallet_service)
+        logging.getLogger(__name__).info("Using REAL blockchain wallet (Ethereum/BSC/Polygon)")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Blockchain wallet service unavailable: {e}")
+        logging.getLogger(__name__).info("Running without blockchain features (simulated wallet only)")
 
     # Register wallet handlers
     register_wallet_handlers(client, cfg, db_conn, wallet_service, trading_service, blockchain_service)
