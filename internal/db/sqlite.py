@@ -7,11 +7,17 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-def init_db(db_path: str) -> sqlite3.Connection:
-    """Initialize SQLite database with required tables"""
+def connect_db(db_path: str) -> sqlite3.Connection:
+    """Connect to SQLite database"""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db(db_path: str) -> sqlite3.Connection:
+    """Initialize SQLite database with required tables"""
+    conn = connect_db(db_path)
     
     # Create tables
     create_tables(conn)
