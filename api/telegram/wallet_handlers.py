@@ -160,23 +160,33 @@ Let's get started! Type /create_wallet to begin.
                 await event.reply("❌ No wallet found. Use /create_wallet to create one.")
                 return
             
-            # Sync balance from blockchain
-            sync_result = blockchain_service.sync_wallet_balance(chat_id)
-            
-            if sync_result['success']:
+            # Sync balance from blockchain if available
+            if blockchain_service:
+                sync_result = blockchain_service.sync_wallet_balance(chat_id)
+                
+                if sync_result['success']:
+                    await event.reply(
+                        f"💰 Wallet Balance\n\n"
+                        f"📍 Address: `{wallet.wallet_address}`\n"
+                        f"💵 USDT: ${sync_result['usdt_balance']:.2f}\n"
+                        f"⛽ Native (ETH): {sync_result['native_balance']:.6f}\n\n"
+                        f"✅ Balance synced from blockchain!",
+                        parse_mode='markdown'
+                    )
+                else:
+                    await event.reply(
+                        f"❌ Failed to sync balance from blockchain.\n\n"
+                        f"Error: {sync_result.get('error', 'Unknown error')}\n\n"
+                        f"Use /sync to try again."
+                    )
+            else:
+                balance = wallet_service.get_wallet_balance(chat_id)
                 await event.reply(
                     f"💰 Wallet Balance\n\n"
                     f"📍 Address: `{wallet.wallet_address}`\n"
-                    f"💵 USDT: ${sync_result['usdt_balance']:.2f}\n"
-                    f"⛽ Native (ETH): {sync_result['native_balance']:.6f}\n\n"
-                    f"✅ Balance synced from blockchain!",
+                    f"💵 USDT: ${balance:.2f}\n\n"
+                    f"⚠️ Using simulated balance (blockchain unavailable)",
                     parse_mode='markdown'
-                )
-            else:
-                await event.reply(
-                    f"❌ Failed to sync balance from blockchain.\n\n"
-                    f"Error: {sync_result.get('error', 'Unknown error')}\n\n"
-                    f"Use /sync to try again."
                 )
         except Exception as e:
             logger.error(f"Error showing balance: {e}")
