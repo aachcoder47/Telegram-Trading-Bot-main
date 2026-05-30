@@ -68,11 +68,6 @@ if __name__ == "__main__":
         cfg = load_config()
         setup_logging(cfg)
 
-        # Check for required Mistral API key
-        if not cfg.mistral_api_key:
-            logging.getLogger(__name__).error("MISTRAL_API_KEY is required for AI signal extraction")
-            sys.exit(1)
-
         asyncio.run(run_wallet_bot(cfg))
     except KeyboardInterrupt:
         logging.getLogger(__name__).info("Stopped by user.")
