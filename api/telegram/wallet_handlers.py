@@ -9,7 +9,7 @@ from configs.config import Config
 logger = logging.getLogger(__name__)
 
 
-def register_wallet_handlers(client, cfg: Config, db_conn, wallet_service: WalletService, trading_service, blockchain_service: RealBlockchainWalletService):
+def register_wallet_handlers(client, cfg: Config, db_conn, wallet_service: WalletService, trading_service, blockchain_service):
     """Register wallet-related command handlers"""
 
     @client.on(events.NewMessage(pattern=r'/start'))
@@ -111,28 +111,38 @@ Let's get started! Type /create_wallet to begin.
                 await event.reply("❌ No wallet found. Use /create_wallet to create one.")
                 return
             
-            # Sync balance from blockchain
-            sync_result = blockchain_service.sync_wallet_balance(chat_id)
-            
-            if sync_result['success']:
-                await event.reply(
-                    f"💳 Deposit Instructions\n\n"
-                    f"Send USDT (ERC-20) to:\n"
-                    f"`{wallet.wallet_address}`\n\n"
-                    f"🌐 Network: Ethereum (ERC-20)\n"
-                    f"💰 Current Balance: ${sync_result['usdt_balance']:.2f} USDT\n"
-                    f"⛽ Native Balance: {sync_result['native_balance']:.6f} ETH\n\n"
-                    f"✅ Balance synced from blockchain!\n\n"
-                    f"Use /balance to check your balance anytime.",
-                    parse_mode='markdown'
-                )
+            # Sync balance from blockchain if available
+            if blockchain_service:
+                sync_result = blockchain_service.sync_wallet_balance(chat_id)
+                
+                if sync_result['success']:
+                    await event.reply(
+                        f"💳 Deposit Instructions\n\n"
+                        f"Send USDT (ERC-20) to:\n"
+                        f"`{wallet.wallet_address}`\n\n"
+                        f"🌐 Network: Ethereum (ERC-20)\n"
+                        f"💰 Current Balance: ${sync_result['usdt_balance']:.2f} USDT\n"
+                        f"⛽ Native Balance: {sync_result['native_balance']:.6f} ETH\n\n"
+                        f"✅ Balance synced from blockchain!\n\n"
+                        f"Use /balance to check your balance anytime.",
+                        parse_mode='markdown'
+                    )
+                else:
+                    await event.reply(
+                        f"💳 Deposit Instructions\n\n"
+                        f"Send USDT (ERC-20) to:\n"
+                        f"`{wallet.wallet_address}`\n\n"
+                        f"🌐 Network: Ethereum (ERC-20)\n"
+                        f"⚠️ Balance sync failed. Use /sync to try again.",
+                        parse_mode='markdown'
+                    )
             else:
                 await event.reply(
                     f"💳 Deposit Instructions\n\n"
                     f"Send USDT (ERC-20) to:\n"
                     f"`{wallet.wallet_address}`\n\n"
                     f"🌐 Network: Ethereum (ERC-20)\n"
-                    f"⚠️ Balance sync failed. Use /sync to try again.",
+                    f"⚠️ Blockchain features unavailable - using simulated wallet",
                     parse_mode='markdown'
                 )
         except Exception as e:
