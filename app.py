@@ -14,8 +14,7 @@ from pkg.logger import setup_logging
 
 async def run_wallet_bot(cfg):
     """Run the wallet-based trading bot"""
-    db_conn = connect_db(cfg.db_path)
-    init_db(db_conn)
+    db_conn = init_db(cfg.db_path)
 
     client = build_client(cfg)
 
