@@ -4,7 +4,6 @@ import logging
 from internal.services.wallet_service import WalletService
 from internal.services.internal_trading import InternalTradingService
 from internal.services.real_blockchain_deposits import RealBlockchainWalletService
-from internal.services.mistral_client import MistralExtractor
 from configs.config import Config
 
 logger = logging.getLogger(__name__)
@@ -266,20 +265,17 @@ Let's get started! Type /create_wallet to begin.
                 await event.reply("❌ Invalid position type. Use 'long' or 'short'.")
                 return
             
-            # Use Mistral to analyze and generate signal
-            extractor = MistralExtractor(cfg)
-            ai_signal = extractor.extract_signal(
-                text=f"Trade {token} {position_type}",
-                image_paths=[],
-                channel_prompt=f"Generate trading signal for {token} {position_type} position"
+            # Execute trade directly (AI analysis optional)
+            result = trading_service.execute_trade(
+                chat_id=chat_id,
+                token=token,
+                position_type=position_type,
+                entry_price=None,
+                quantity=amount if amount else None,
+                leverage=2,
+                stop_loss=None,
+                take_profit=None
             )
-            
-            if not ai_signal:
-                await event.reply("❌ AI analysis failed. Please try again.")
-                return
-            
-            # Execute trade with AI signal
-            result = trading_service.auto_trade_with_ai_signal(chat_id, ai_signal)
             
             if result['success']:
                 await event.reply(
