@@ -1,5 +1,5 @@
 import logging
-import random
+import ccxt
 from typing import Optional, Dict, Any, List
 from configs.config import Config
 from internal.repositories.wallets import (
@@ -13,34 +13,52 @@ from internal.services.wallet_service import WalletService
 logger = logging.getLogger(__name__)
 
 
-class InternalTradingService:
-    """Service for internal trading on custodial wallets"""
-    
-    # Simulated token prices (in USD)
-    TOKEN_PRICES = {
-        "BTC": 65000.0,
-        "ETH": 3500.0,
-        "SOL": 145.0,
-        "XRP": 0.52,
-        "DOGE": 0.12,
-        "ADA": 0.45,
-        "AVAX": 35.0,
-        "DOT": 7.0,
-        "LINK": 14.0,
-        "MATIC": 0.85,
-    }
+class RealExchangeTradingService:
+    """Service for real trading on cryptocurrency exchanges"""
     
     def __init__(self, db_conn, cfg: Config, wallet_service: WalletService):
         self.db_conn = db_conn
         self.cfg = cfg
         self.wallet_service = wallet_service
+        self.exchange = self._init_exchange()
     
-    def get_simulated_price(self, token: str) -> float:
-        """Get simulated price for a token with random variation"""
-        base_price = self.TOKEN_PRICES.get(token.upper(), 1.0)
-        # Add random variation of +/- 2%
-        variation = random.uniform(-0.02, 0.02)
-        return base_price * (1 + variation)
+    def _init_exchange(self) -> ccxt.Exchange:
+        """Initialize exchange connection"""
+        try:
+            if self.cfg.exchange == 'binance':
+                exchange = ccxt.binance({
+                    'apiKey': self.cfg.binance_api_key,
+                    'secret': self.cfg.binance_secret,
+                    'enableRateLimit': True,
+                    'options': {
+                        'defaultType': 'future',  # Use futures for leverage trading
+                    }
+                })
+            elif self.cfg.exchange == 'bybit':
+                exchange = ccxt.bybit({
+                    'apiKey': self.cfg.bybit_api_key,
+                    'secret': self.cfg.bybit_secret,
+                    'enableRateLimit': True,
+                })
+            else:
+                raise ValueError(f"Unsupported exchange: {self.cfg.exchange}")
+            
+            # Test connection
+            exchange.load_markets()
+            logger.info(f"Connected to {self.cfg.exchange} exchange")
+            return exchange
+        except Exception as e:
+            logger.error(f"Failed to initialize exchange: {e}")
+            raise
+    
+    def get_real_price(self, symbol: str) -> float:
+        """Get real-time price from exchange"""
+        try:
+            ticker = self.exchange.fetch_ticker(symbol)
+            return ticker['last']
+        except Exception as e:
+            logger.error(f"Failed to fetch price for {symbol}: {e}")
+            raise
     
     def execute_trade(
         self,
@@ -53,16 +71,19 @@ class InternalTradingService:
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Execute a trade internally"""
+        """Execute a real trade on the exchange"""
         try:
             # Get chat's wallet
             wallet = self.wallet_service.get_user_wallet(chat_id)
             if not wallet:
                 return {"success": False, "error": "No wallet found for chat"}
             
-            # Get entry price (use provided or simulate)
+            # Format symbol for exchange (e.g., BTC/USDT)
+            symbol = f"{token.upper()}/USDT"
+            
+            # Get real entry price if not provided
             if not entry_price:
-                entry_price = self.get_simulated_price(token)
+                entry_price = self.get_real_price(symbol)
             
             # Calculate trade value
             trade_value = entry_price * quantity
@@ -77,7 +98,41 @@ class InternalTradingService:
             if not self.wallet_service.deduct_for_trade(chat_id, trade_value):
                 return {"success": False, "error": "Failed to deduct funds from wallet"}
             
-            # Create trading position
+            # Set leverage if provided
+            if leverage and hasattr(self.exchange, 'set_leverage'):
+                try:
+                    self.exchange.set_leverage(int(leverage), symbol)
+                except Exception as e:
+                    logger.warning(f"Failed to set leverage: {e}")
+            
+            # Execute real order on exchange
+            side = 'buy' if position_type.lower() == 'long' else 'sell'
+            
+            # Create order with stop-loss and take-profit
+            order_params = {}
+            if stop_loss:
+                order_params['stopLoss'] = {
+                    'price': stop_loss,
+                    'type': 'limit',
+                }
+            if take_profit:
+                order_params['takeProfit'] = {
+                    'price': take_profit,
+                    'type': 'limit',
+                }
+            
+            # Execute market order
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type='market',
+                side=side,
+                amount=quantity,
+                params=order_params
+            )
+            
+            logger.info(f"Executed real {side} order on {self.cfg.exchange}: {order}")
+            
+            # Create trading position in database
             position = create_trading_position(
                 self.db_conn,
                 wallet.id,
@@ -92,10 +147,6 @@ class InternalTradingService:
                 self.cfg.sql_busy_sleep,
             )
             
-            logger.info(
-                f"Executed {position_type} trade for chat {chat_id}: {quantity} {token} @ {entry_price}"
-            )
-            
             return {
                 "success": True,
                 "position_id": position.id,
@@ -107,10 +158,11 @@ class InternalTradingService:
                 "stop_loss": position.stop_loss,
                 "take_profit": position.take_profit,
                 "trade_value": trade_value,
+                "exchange_order_id": order['id'],
             }
             
         except Exception as e:
-            logger.error(f"Error executing trade: {e}")
+            logger.error(f"Error executing real trade: {e}")
             return {"success": False, "error": str(e)}
     
     def close_position(
@@ -119,7 +171,7 @@ class InternalTradingService:
         position_id: int,
         exit_price: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Close a trading position"""
+        """Close a trading position on the exchange"""
         try:
             # Get chat's wallet
             wallet = self.wallet_service.get_user_wallet(chat_id)
@@ -140,12 +192,26 @@ class InternalTradingService:
             if not position:
                 return {"success": False, "error": "Position not found or already closed"}
             
-            # Get exit price (use provided or simulate)
+            # Format symbol
+            symbol = f"{position.token}/USDT"
+            
+            # Get exit price if not provided
             if not exit_price:
-                exit_price = self.get_simulated_price(position.token)
+                exit_price = self.get_real_price(symbol)
+            
+            # Calculate opposite side for closing
+            close_side = 'sell' if position.position_type == 'long' else 'buy'
+            
+            # Execute closing order on exchange
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type='market',
+                side=close_side,
+                amount=position.quantity,
+            )
             
             # Calculate PnL
-            if position.position_type == "long":
+            if position.position_type == 'long':
                 pnl = (exit_price - position.entry_price) * position.quantity
             else:  # short
                 pnl = (position.entry_price - exit_price) * position.quantity
@@ -154,7 +220,7 @@ class InternalTradingService:
             if position.leverage:
                 pnl = pnl * position.leverage
             
-            # Close the position
+            # Close the position in database
             close_trading_position(
                 self.db_conn,
                 position_id,
@@ -167,7 +233,7 @@ class InternalTradingService:
             self.wallet_service.add_trade_pnl(chat_id, pnl)
             
             logger.info(
-                f"Closed position {position_id} for chat {chat_id}: PnL = {pnl:.2f} USDT"
+                f"Closed position {position_id} on {self.cfg.exchange}: PnL = {pnl:.2f} USDT"
             )
             
             return {
@@ -176,6 +242,7 @@ class InternalTradingService:
                 "exit_price": exit_price,
                 "pnl": pnl,
                 "token": position.token,
+                "exchange_order_id": order['id'],
             }
             
         except Exception as e:
@@ -218,7 +285,7 @@ class InternalTradingService:
         if entry_price:
             quantity = trade_amount / entry_price
         else:
-            quantity = trade_amount / self.get_simulated_price(token)
+            quantity = trade_amount / self.get_real_price(f"{token.upper()}/USDT")
         
         # Get stop loss and take profit
         stop_loss = stop_losses[0] if stop_losses else None

@@ -91,6 +91,18 @@ class Config:
     max_price_deviation_pct: float
     enable_auto_execution: bool
 
+    # Real Exchange Settings (Binance/Bybit)
+    binance_api_key: Optional[str]
+    binance_secret: Optional[str]
+    bybit_api_key: Optional[str]
+    bybit_secret: Optional[str]
+
+    # Real Trading Mode
+    enable_real_trading: bool
+
+    # Blockchain Network Configuration
+    blockchain_network: str
+
 
 def _parse_channels_config() -> List[ChannelPolicyConfig]:
     """Parse channels configuration from environment variables and file"""
@@ -242,6 +254,24 @@ def load_config() -> Config:
         "False",
     )
 
+    # Real Exchange Settings
+    binance_api_key = os.getenv("BINANCE_API_KEY") or None
+    binance_secret = os.getenv("BINANCE_SECRET") or None
+    bybit_api_key = os.getenv("BYBIT_API_KEY") or None
+    bybit_secret = os.getenv("BYBIT_SECRET") or None
+
+    # Real Trading Mode
+    enable_real_trading = os.getenv("ENABLE_REAL_TRADING", "0") not in (
+        "0",
+        "false",
+        "False",
+    )
+
+    # Blockchain Network Configuration
+    blockchain_network = (os.getenv("BLOCKCHAIN_NETWORK") or "ethereum").strip().lower()
+    if blockchain_network not in ("ethereum", "bsc", "polygon"):
+        blockchain_network = "ethereum"
+
     return Config(
         api_id=api_id,
         api_hash=api_hash,
@@ -285,4 +315,10 @@ def load_config() -> Config:
         order_notional=order_notional,
         max_price_deviation_pct=max_price_deviation_pct,
         enable_auto_execution=enable_auto_execution,
+        binance_api_key=binance_api_key,
+        binance_secret=binance_secret,
+        bybit_api_key=bybit_api_key,
+        bybit_secret=bybit_secret,
+        enable_real_trading=enable_real_trading,
+        blockchain_network=blockchain_network,
     )

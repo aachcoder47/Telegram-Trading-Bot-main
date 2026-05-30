@@ -8,6 +8,7 @@ from api.telegram.client import build_client
 from api.telegram.wallet_handlers import register_wallet_handlers
 from internal.services.wallet_service import WalletService
 from internal.services.internal_trading import InternalTradingService
+from internal.services.real_blockchain_deposits import RealBlockchainWalletService
 from pkg.logger import setup_logging
 
 
@@ -19,11 +20,18 @@ async def run_wallet_bot(cfg):
     client = build_client(cfg)
 
     # Initialize services
-    wallet_service = WalletService(cfg, db_conn)
-    trading_service = InternalTradingService(cfg, db_conn, wallet_service)
+    wallet_service = WalletService(db_conn, cfg)
+    
+    # Use simulated trading for now (can be replaced with real trading later)
+    trading_service = InternalTradingService(db_conn, cfg, wallet_service)
+    logging.getLogger(__name__).info("Using SIMULATED trading (internal)")
+    
+    # Initialize blockchain wallet service for real deposits/withdrawals
+    blockchain_service = RealBlockchainWalletService(db_conn, cfg, wallet_service)
+    logging.getLogger(__name__).info("Using REAL blockchain wallet (Ethereum/BSC/Polygon)")
 
     # Register wallet handlers
-    register_wallet_handlers(client, cfg, db_conn, wallet_service, trading_service)
+    register_wallet_handlers(client, cfg, db_conn, wallet_service, trading_service, blockchain_service)
 
     attempts = 0
     while True:

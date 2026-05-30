@@ -1,7 +1,10 @@
+import sqlite3
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional, List
-from internal.db.sqlite import sql_execute_with_retry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -19,12 +22,11 @@ class Wallet:
 class WalletTransaction:
     id: int
     wallet_id: int
-    transaction_type: str  # 'deposit', 'withdraw', 'trade', 'fee'
+    transaction_type: str
     amount: float
     currency: str
     fee: float
     status: str
-    transaction_hash: Optional[str]
     created_at_utc: str
 
 
@@ -33,59 +35,51 @@ class TradingPosition:
     id: int
     wallet_id: int
     token: str
-    position_type: str  # 'long' or 'short'
+    position_type: str
     entry_price: float
     quantity: float
     leverage: Optional[float]
     stop_loss: Optional[float]
     take_profit: Optional[float]
-    status: str  # 'open', 'closed', 'liquidated'
-    pnl: float
+    status: str
     opened_at_utc: str
     closed_at_utc: Optional[str]
+    pnl: Optional[float]
+
+
+def get_utc_now() -> str:
+    """Get current UTC timestamp as ISO string"""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def create_wallet(
-    conn,
+    conn: sqlite3.Connection,
     chat_id: int,
     wallet_address: str,
     private_key_encrypted: str,
-    busy_retries: int,
-    busy_sleep_secs: float,
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
 ) -> Wallet:
-    now = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    """Create a new wallet in the database"""
+    now = get_utc_now()
     sql = """
-    INSERT INTO wallets (chat_id, wallet_address, private_key_encrypted, balance_usd, created_at_utc, updated_at_utc)
-    VALUES (?, ?, ?, 0, ?, ?)
-    RETURNING id, chat_id, wallet_address, private_key_encrypted, balance_usd, created_at_utc, updated_at_utc;
+        INSERT INTO wallets (chat_id, wallet_address, private_key_encrypted, balance_usd, created_at_utc, updated_at_utc)
+        VALUES (?, ?, ?, 0, ?, ?)
     """
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (chat_id, wallet_address, private_key_encrypted, now, now))
-        row = cursor.fetchone()
-        conn.commit()
-        return Wallet(
-            id=row[0],
-            chat_id=row[1],
-            wallet_address=row[2],
-            private_key_encrypted=row[3],
-            balance_usd=row[4],
-            created_at_utc=row[5],
-            updated_at_utc=row[6],
-        )
-    finally:
-        cursor.close()
-
-
-def get_wallet_by_chat_id(
-    conn, chat_id: int, busy_retries: int, busy_sleep_secs: float
-) -> Optional[Wallet]:
-    sql = "SELECT id, chat_id, wallet_address, private_key_encrypted, balance_usd, created_at_utc, updated_at_utc FROM wallets WHERE chat_id = ?"
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (chat_id,))
-        row = cursor.fetchone()
-        if row:
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (chat_id, wallet_address, private_key_encrypted, now, now))
+            conn.commit()
+            
+            # Return the created wallet
+            cursor.execute(
+                "SELECT id, chat_id, wallet_address, private_key_encrypted, balance_usd, created_at_utc, updated_at_utc FROM wallets WHERE id = ?",
+                (cursor.lastrowid,)
+            )
+            row = cursor.fetchone()
+            
             return Wallet(
                 id=row[0],
                 chat_id=row[1],
@@ -95,111 +89,140 @@ def get_wallet_by_chat_id(
                 created_at_utc=row[5],
                 updated_at_utc=row[6],
             )
-        return None
-    finally:
-        cursor.close()
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise
 
 
-def get_wallet_by_address(
-    conn, wallet_address: str, busy_retries: int, busy_sleep_secs: float
+def get_wallet_by_chat_id(
+    conn: sqlite3.Connection,
+    chat_id: int,
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
 ) -> Optional[Wallet]:
-    sql = "SELECT id, user_id, wallet_address, private_key_encrypted, balance_usd, created_at_utc, updated_at_utc FROM wallets WHERE wallet_address = ?"
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (wallet_address,))
-        row = cursor.fetchone()
-        if row:
+    """Get a wallet by chat ID"""
+    sql = "SELECT id, chat_id, wallet_address, private_key_encrypted, balance_usd, created_at_utc, updated_at_utc FROM wallets WHERE chat_id = ?"
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (chat_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return None
+            
             return Wallet(
                 id=row[0],
-                user_id=row[1],
+                chat_id=row[1],
                 wallet_address=row[2],
                 private_key_encrypted=row[3],
                 balance_usd=row[4],
                 created_at_utc=row[5],
                 updated_at_utc=row[6],
             )
-        return None
-    finally:
-        cursor.close()
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise
+
+
+def get_wallet_by_address(
+    conn: sqlite3.Connection,
+    wallet_address: str,
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
+) -> Optional[Wallet]:
+    """Get a wallet by wallet address"""
+    sql = "SELECT id, chat_id, wallet_address, private_key_encrypted, balance_usd, created_at_utc, updated_at_utc FROM wallets WHERE wallet_address = ?"
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (wallet_address,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return None
+            
+            return Wallet(
+                id=row[0],
+                chat_id=row[1],
+                wallet_address=row[2],
+                private_key_encrypted=row[3],
+                balance_usd=row[4],
+                created_at_utc=row[5],
+                updated_at_utc=row[6],
+            )
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise
 
 
 def update_wallet_balance(
-    conn,
+    conn: sqlite3.Connection,
     wallet_id: int,
     new_balance: float,
-    busy_retries: int,
-    busy_sleep_secs: float,
-) -> None:
-    now = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
+) -> bool:
+    """Update wallet balance"""
     sql = "UPDATE wallets SET balance_usd = ?, updated_at_utc = ? WHERE id = ?"
-    sql_execute_with_retry(
-        conn, sql, (new_balance, now, wallet_id), busy_retries, busy_sleep_secs
-    )
+    now = get_utc_now()
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (new_balance, now, wallet_id))
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise
 
 
 def create_transaction(
-    conn,
+    conn: sqlite3.Connection,
     wallet_id: int,
     transaction_type: str,
     amount: float,
     currency: str,
-    fee: float,
-    status: str,
-    transaction_hash: Optional[str],
-    busy_retries: int,
-    busy_sleep_secs: float,
+    fee: float = 0.0,
+    status: str = "completed",
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
 ) -> WalletTransaction:
-    now = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    """Create a wallet transaction"""
+    now = get_utc_now()
     sql = """
-    INSERT INTO wallet_transactions (wallet_id, transaction_type, amount, currency, fee, status, transaction_hash, created_at_utc)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    RETURNING id, wallet_id, transaction_type, amount, currency, fee, status, transaction_hash, created_at_utc;
+        INSERT INTO wallet_transactions (wallet_id, transaction_type, amount, currency, fee, status, created_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            sql,
-            (
-                wallet_id,
-                transaction_type,
-                amount,
-                currency,
-                fee,
-                status,
-                transaction_hash,
-                now,
-            ),
-        )
-        row = cursor.fetchone()
-        conn.commit()
-        return WalletTransaction(
-            id=row[0],
-            wallet_id=row[1],
-            transaction_type=row[2],
-            amount=row[3],
-            currency=row[4],
-            fee=row[5],
-            status=row[6],
-            transaction_hash=row[7],
-            created_at_utc=row[8],
-        )
-    finally:
-        cursor.close()
-
-
-def get_wallet_transactions(
-    conn, wallet_id: int, busy_retries: int, busy_sleep_secs: float
-) -> List[WalletTransaction]:
-    sql = """
-    SELECT id, wallet_id, transaction_type, amount, currency, fee, status, transaction_hash, created_at_utc
-    FROM wallet_transactions WHERE wallet_id = ? ORDER BY created_at_utc DESC
-    """
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (wallet_id,))
-        rows = cursor.fetchall()
-        return [
-            WalletTransaction(
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (wallet_id, transaction_type, amount, currency, fee, status, now))
+            conn.commit()
+            
+            cursor.execute(
+                "SELECT id, wallet_id, transaction_type, amount, currency, fee, status, created_at_utc FROM wallet_transactions WHERE id = ?",
+                (cursor.lastrowid,)
+            )
+            row = cursor.fetchone()
+            
+            return WalletTransaction(
                 id=row[0],
                 wallet_id=row[1],
                 transaction_type=row[2],
@@ -207,102 +230,92 @@ def get_wallet_transactions(
                 currency=row[4],
                 fee=row[5],
                 status=row[6],
-                transaction_hash=row[7],
-                created_at_utc=row[8],
+                created_at_utc=row[7],
             )
-            for row in rows
-        ]
-    finally:
-        cursor.close()
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise
+
+
+def get_wallet_transactions(
+    conn: sqlite3.Connection,
+    wallet_id: int,
+    limit: int = 50,
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
+) -> List[WalletTransaction]:
+    """Get wallet transactions"""
+    sql = """
+        SELECT id, wallet_id, transaction_type, amount, currency, fee, status, created_at_utc
+        FROM wallet_transactions
+        WHERE wallet_id = ?
+        ORDER BY created_at_utc DESC
+        LIMIT ?
+    """
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (wallet_id, limit))
+            rows = cursor.fetchall()
+            
+            return [
+                WalletTransaction(
+                    id=row[0],
+                    wallet_id=row[1],
+                    transaction_type=row[2],
+                    amount=row[3],
+                    currency=row[4],
+                    fee=row[5],
+                    status=row[6],
+                    created_at_utc=row[7],
+                )
+                for row in rows
+            ]
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise
 
 
 def create_trading_position(
-    conn,
+    conn: sqlite3.Connection,
     wallet_id: int,
     token: str,
     position_type: str,
     entry_price: float,
     quantity: float,
-    leverage: Optional[float],
-    stop_loss: Optional[float],
-    take_profit: Optional[float],
-    busy_retries: int,
-    busy_sleep_secs: float,
+    leverage: Optional[float] = None,
+    stop_loss: Optional[float] = None,
+    take_profit: Optional[float] = None,
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
 ) -> TradingPosition:
-    now = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    """Create a trading position"""
+    now = get_utc_now()
     sql = """
-    INSERT INTO trading_positions (wallet_id, token, position_type, entry_price, quantity, leverage, stop_loss, take_profit, status, pnl, opened_at_utc)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?)
-    RETURNING id, wallet_id, token, position_type, entry_price, quantity, leverage, stop_loss, take_profit, status, pnl, opened_at_utc, closed_at_utc;
+        INSERT INTO trading_positions (wallet_id, token, position_type, entry_price, quantity, leverage, stop_loss, take_profit, status, opened_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
     """
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            sql,
-            (
-                wallet_id,
-                token,
-                position_type,
-                entry_price,
-                quantity,
-                leverage,
-                stop_loss,
-                take_profit,
-                now,
-            ),
-        )
-        row = cursor.fetchone()
-        conn.commit()
-        return TradingPosition(
-            id=row[0],
-            wallet_id=row[1],
-            token=row[2],
-            position_type=row[3],
-            entry_price=row[4],
-            quantity=row[5],
-            leverage=row[6],
-            stop_loss=row[7],
-            take_profit=row[8],
-            status=row[9],
-            pnl=row[10],
-            opened_at_utc=row[11],
-            closed_at_utc=row[12],
-        )
-    finally:
-        cursor.close()
-
-
-def close_trading_position(
-    conn,
-    position_id: int,
-    pnl: float,
-    busy_retries: int,
-    busy_sleep_secs: float,
-) -> None:
-    now = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-    sql = """
-    UPDATE trading_positions
-    SET status = 'closed', pnl = ?, closed_at_utc = ?
-    WHERE id = ?
-    """
-    sql_execute_with_retry(
-        conn, sql, (pnl, now, position_id), busy_retries, busy_sleep_secs
-    )
-
-
-def get_open_positions(
-    conn, wallet_id: int, busy_retries: int, busy_sleep_secs: float
-) -> List[TradingPosition]:
-    sql = """
-    SELECT id, wallet_id, token, position_type, entry_price, quantity, leverage, stop_loss, take_profit, status, pnl, opened_at_utc, closed_at_utc
-    FROM trading_positions WHERE wallet_id = ? AND status = 'open'
-    """
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (wallet_id,))
-        rows = cursor.fetchall()
-        return [
-            TradingPosition(
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (wallet_id, token.upper(), position_type.lower(), entry_price, quantity, leverage, stop_loss, take_profit, now))
+            conn.commit()
+            
+            cursor.execute(
+                "SELECT id, wallet_id, token, position_type, entry_price, quantity, leverage, stop_loss, take_profit, status, opened_at_utc, closed_at_utc, pnl FROM trading_positions WHERE id = ?",
+                (cursor.lastrowid,)
+            )
+            row = cursor.fetchone()
+            
+            return TradingPosition(
                 id=row[0],
                 wallet_id=row[1],
                 token=row[2],
@@ -313,11 +326,84 @@ def get_open_positions(
                 stop_loss=row[7],
                 take_profit=row[8],
                 status=row[9],
-                pnl=row[10],
-                opened_at_utc=row[11],
-                closed_at_utc=row[12],
+                opened_at_utc=row[10],
+                closed_at_utc=row[11],
+                pnl=row[12],
             )
-            for row in rows
-        ]
-    finally:
-        cursor.close()
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise
+
+
+def get_open_positions(
+    conn: sqlite3.Connection,
+    wallet_id: int,
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
+) -> List[TradingPosition]:
+    """Get open trading positions for a wallet"""
+    sql = """
+        SELECT id, wallet_id, token, position_type, entry_price, quantity, leverage, stop_loss, take_profit, status, opened_at_utc, closed_at_utc, pnl
+        FROM trading_positions
+        WHERE wallet_id = ? AND status = 'open'
+        ORDER BY opened_at_utc DESC
+    """
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (wallet_id,))
+            rows = cursor.fetchall()
+            
+            return [
+                TradingPosition(
+                    id=row[0],
+                    wallet_id=row[1],
+                    token=row[2],
+                    position_type=row[3],
+                    entry_price=row[4],
+                    quantity=row[5],
+                    leverage=row[6],
+                    stop_loss=row[7],
+                    take_profit=row[8],
+                    status=row[9],
+                    opened_at_utc=row[10],
+                    closed_at_utc=row[11],
+                    pnl=row[12],
+                )
+                for row in rows
+            ]
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise
+
+
+def close_trading_position(
+    conn: sqlite3.Connection,
+    position_id: int,
+    pnl: float,
+    busy_retries: int = 10,
+    busy_sleep: float = 0.2,
+) -> bool:
+    """Close a trading position"""
+    sql = "UPDATE trading_positions SET status = 'closed', closed_at_utc = ?, pnl = ? WHERE id = ?"
+    now = get_utc_now()
+    
+    for attempt in range(busy_retries):
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (now, pnl, position_id))
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < busy_retries - 1:
+                import time
+                time.sleep(busy_sleep)
+                continue
+            raise

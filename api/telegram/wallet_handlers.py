@@ -3,13 +3,14 @@ import logging
 
 from internal.services.wallet_service import WalletService
 from internal.services.internal_trading import InternalTradingService
+from internal.services.real_blockchain_deposits import RealBlockchainWalletService
 from internal.services.mistral_client import MistralExtractor
 from configs.config import Config
 
 logger = logging.getLogger(__name__)
 
 
-def register_wallet_handlers(client, cfg: Config, db_conn, wallet_service: WalletService, trading_service: InternalTradingService):
+def register_wallet_handlers(client, cfg: Config, db_conn, wallet_service: WalletService, trading_service, blockchain_service: RealBlockchainWalletService):
     """Register wallet-related command handlers"""
 
     @client.on(events.NewMessage(pattern=r'/start'))
@@ -102,7 +103,7 @@ Let's get started! Type /create_wallet to begin.
 
     @client.on(events.NewMessage(pattern=r'/deposit'))
     async def on_deposit(event):
-        """Show deposit instructions"""
+        """Show deposit instructions and sync balance"""
         try:
             chat_id = event.chat_id
             wallet = wallet_service.get_user_wallet(chat_id)
@@ -111,62 +112,132 @@ Let's get started! Type /create_wallet to begin.
                 await event.reply("❌ No wallet found. Use /create_wallet to create one.")
                 return
             
-            await event.reply(
-                f"💳 Deposit Instructions\n\n"
-                f"Send USDT or other supported tokens to:\n"
-                f"`{wallet.wallet_address}`\n\n"
-                f"Network: Ethereum (ERC-20)\n"
-                f"Minimum deposit: $10 USD\n\n"
-                f"Use /balance to check your deposit status.",
-                parse_mode='markdown'
-            )
+            # Sync balance from blockchain
+            sync_result = blockchain_service.sync_wallet_balance(chat_id)
+            
+            if sync_result['success']:
+                await event.reply(
+                    f"💳 Deposit Instructions\n\n"
+                    f"Send USDT (ERC-20) to:\n"
+                    f"`{wallet.wallet_address}`\n\n"
+                    f"🌐 Network: Ethereum (ERC-20)\n"
+                    f"💰 Current Balance: ${sync_result['usdt_balance']:.2f} USDT\n"
+                    f"⛽ Native Balance: {sync_result['native_balance']:.6f} ETH\n\n"
+                    f"✅ Balance synced from blockchain!\n\n"
+                    f"Use /balance to check your balance anytime.",
+                    parse_mode='markdown'
+                )
+            else:
+                await event.reply(
+                    f"💳 Deposit Instructions\n\n"
+                    f"Send USDT (ERC-20) to:\n"
+                    f"`{wallet.wallet_address}`\n\n"
+                    f"🌐 Network: Ethereum (ERC-20)\n"
+                    f"⚠️ Balance sync failed. Use /sync to try again.",
+                    parse_mode='markdown'
+                )
         except Exception as e:
             logger.error(f"Error showing deposit info: {e}")
             await event.reply(f"❌ Error: {str(e)}")
 
     @client.on(events.NewMessage(pattern=r'/balance'))
     async def on_balance(event):
-        """Show wallet balance"""
+        """Show wallet balance from blockchain"""
         try:
             chat_id = event.chat_id
-            balance = wallet_service.get_wallet_balance(chat_id)
+            wallet = wallet_service.get_user_wallet(chat_id)
             
-            await event.reply(f"💰 Current Balance: ${balance:.2f} USD")
+            if not wallet:
+                await event.reply("❌ No wallet found. Use /create_wallet to create one.")
+                return
+            
+            # Sync balance from blockchain
+            sync_result = blockchain_service.sync_wallet_balance(chat_id)
+            
+            if sync_result['success']:
+                await event.reply(
+                    f"💰 Wallet Balance\n\n"
+                    f"📍 Address: `{wallet.wallet_address}`\n"
+                    f"💵 USDT: ${sync_result['usdt_balance']:.2f}\n"
+                    f"⛽ Native (ETH): {sync_result['native_balance']:.6f}\n\n"
+                    f"✅ Balance synced from blockchain!",
+                    parse_mode='markdown'
+                )
+            else:
+                await event.reply(
+                    f"❌ Failed to sync balance from blockchain.\n\n"
+                    f"Error: {sync_result.get('error', 'Unknown error')}\n\n"
+                    f"Use /sync to try again."
+                )
         except Exception as e:
             logger.error(f"Error showing balance: {e}")
             await event.reply(f"❌ Error: {str(e)}")
 
-    @client.on(events.NewMessage(pattern=r'/withdraw'))
-    async def on_withdraw(event):
-        """Withdraw funds from wallet"""
+    @client.on(events.NewMessage(pattern=r'/sync'))
+    async def on_sync(event):
+        """Sync wallet balance from blockchain"""
         try:
             chat_id = event.chat_id
-            # Parse amount from message
+            sync_result = blockchain_service.sync_wallet_balance(chat_id)
+            
+            if sync_result['success']:
+                await event.reply(
+                    f"✅ Balance synced successfully!\n\n"
+                    f"💰 USDT: ${sync_result['usdt_balance']:.2f}\n"
+                    f"⛽ Native (ETH): {sync_result['native_balance']:.6f}",
+                    parse_mode='markdown'
+                )
+            else:
+                await event.reply(
+                    f"❌ Sync failed.\n\n"
+                    f"Error: {sync_result.get('error', 'Unknown error')}"
+                )
+        except Exception as e:
+            logger.error(f"Error syncing balance: {e}")
+            await event.reply(f"❌ Error: {str(e)}")
+
+    @client.on(events.NewMessage(pattern=r'/withdraw'))
+    async def on_withdraw(event):
+        """Withdraw funds to blockchain address"""
+        try:
+            chat_id = event.chat_id
+            # Parse amount and address from message
             message_text = event.message.message
             parts = message_text.split()
             
-            if len(parts) < 2:
-                await event.reply("Usage: /withdraw <amount> [currency]\nExample: /withdraw 100 USDT")
+            if len(parts) < 3:
+                await event.reply("Usage: /withdraw <amount> <address> [currency]\nExample: /withdraw 100 0x1234...abcd USDT")
                 return
             
             try:
                 amount = float(parts[1])
-                currency = parts[2] if len(parts) > 2 else "USDT"
+                to_address = parts[2]
+                currency = parts[3] if len(parts) > 3 else "USDT"
             except ValueError:
                 await event.reply("❌ Invalid amount. Please provide a valid number.")
                 return
             
-            transaction = wallet_service.withdraw_from_wallet(chat_id, amount, currency)
+            # Validate address format
+            if not to_address.startswith('0x') or len(to_address) != 42:
+                await event.reply("❌ Invalid address format. Must be a valid Ethereum address (0x...)")
+                return
             
-            await event.reply(
-                f"✅ Withdrawal processed!\n\n"
-                f"💵 Amount: ${amount:.2f} {currency}\n"
-                f"💸 Fee (7.5%): ${transaction.fee:.2f} {currency}\n"
-                f"📉 Total deducted: ${amount + transaction.fee:.2f} {currency}\n\n"
-                f"Funds will be sent to your registered withdrawal address."
-            )
-        except ValueError as e:
-            await event.reply(f"❌ {str(e)}")
+            # Execute blockchain withdrawal
+            result = blockchain_service.withdraw_to_blockchain(chat_id, to_address, amount, currency)
+            
+            if result['success']:
+                await event.reply(
+                    f"✅ Withdrawal initiated!\n\n"
+                    f"💵 Amount: ${amount:.2f} {currency}\n"
+                    f"💸 Fee (7.5%): ${result['fee']:.2f} {currency}\n"
+                    f"📉 Total deducted: ${result['total_deduction']:.2f} {currency}\n"
+                    f"📍 To: `{to_address}`\n"
+                    f"🔗 TX: `{result['tx_hash']}`\n\n"
+                    f"⏳ Transaction pending blockchain confirmation...",
+                    parse_mode='markdown'
+                )
+            else:
+                await event.reply(f"❌ Withdrawal failed: {result['error']}")
         except Exception as e:
             logger.error(f"Error processing withdrawal: {e}")
             await event.reply(f"❌ Error: {str(e)}")
